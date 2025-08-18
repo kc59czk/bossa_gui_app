@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, ttk
 import threading
 import queue
 import socket
@@ -45,6 +45,17 @@ class BossaApp:
 
         self.clear_filter_button = tk.Button(filter_frame, text="Wyczyść filtr", command=self.clear_filter, state='disabled')
         self.clear_filter_button.pack(side='left', padx=5)
+
+        # --- Wybór rachunku ---
+        account_frame = tk.Frame(main_frame)
+        account_frame.pack(fill='x', pady=(0, 10))
+        tk.Label(account_frame, text="Wybierz rachunek:").pack(side='left', padx=(0, 5))
+        self.account_var = tk.StringVar()
+        self.account_dropdown = ttk.Combobox(account_frame, textvariable=self.account_var, state="readonly")
+        self.account_dropdown.pack(side='left', padx=5)
+        self.account_dropdown.bind("<<ComboboxSelected>>", self.on_account_selected)
+        self.account_dropdown['values'] = ["ALL"]
+        self.account_var.set("ALL")
 
         # --- Podział okna na logi i portfel ---
         paned_window = tk.PanedWindow(main_frame, orient='vertical', sashrelief='raised')
@@ -108,7 +119,7 @@ class BossaApp:
             if message_type == "LOG":
                 self.log_message(self.status_log, data)
             elif message_type == "LOGIN_SUCCESS":
-                self.log_message(self.status_log, "Logowanie udane! Możesz zarządzać filtrem.")
+                self.log_message(self.status_log, f"Logowanie udane! Możesz zarządzać filtrem. INFO: {data}")
                 self.disconnect_button.config(state='normal')
                 self.add_filter_button.config(state='normal')
                 self.clear_filter_button.config(state='normal')
@@ -151,24 +162,50 @@ class BossaApp:
             self.client.disconnect()
             
     def display_portfolio(self, portfolio_data):
+        # Ustaw dostępne rachunki w dropdown
+        accounts = list(portfolio_data.keys())
+        self.account_dropdown['values'] = ["ALL"] + accounts
+        # Jeśli wybrany rachunek nie istnieje, ustaw na ALL
+        if self.account_var.get() not in self.account_dropdown['values']:
+            self.account_var.set("ALL")
+        # Wyświetl dane dla wybranego rachunku
+        self._show_selected_account_portfolio(portfolio_data)
+
+    def on_account_selected(self, event=None):
+        # Wywoływane przy zmianie wyboru w dropdown
+        if hasattr(self, 'portfolio_displayed_data'):
+            self._show_selected_account_portfolio(self.portfolio_displayed_data)
+
+    def _show_selected_account_portfolio(self, portfolio_data):
+        self.portfolio_displayed_data = portfolio_data  # zapamiętaj do obsługi zmiany dropdown
         self.portfolio_display.config(state='normal')
         self.portfolio_display.delete('1.0', tk.END)
+        selected = self.account_var.get()
         formatted_text = ""
-        for account, data in portfolio_data.items():
-            formatted_text += f"[ RACHUNEK: {account} ]\n"
-            formatted_text += "  Środki:\n"
-            for fund, value in data.get('funds', {}).items():
-                formatted_text += f"    - {fund}: {value}\n"
-            formatted_text += "\n  Pozycje:\n"
-            positions = data.get('positions', [])
-            if positions:
-                for pos in positions:
-                    formatted_text += f"    - Symbol: {pos['symbol']}, Ilość: {pos['quantity']}, ISIN: {pos['isin']}\n"
-            else:
-                formatted_text += "    - Brak otwartych pozycji.\n"
-            formatted_text += "-"*40 + "\n"
+        if selected == "ALL":
+            for account, data in portfolio_data.items():
+                formatted_text += self._format_account(account, data)
+        elif selected in portfolio_data:
+            formatted_text += self._format_account(selected, portfolio_data[selected])
+        else:
+            formatted_text = "Brak danych dla wybranego rachunku."
         self.portfolio_display.insert(tk.END, formatted_text)
         self.portfolio_display.config(state='disabled')
+
+    def _format_account(self, account, data):
+        formatted = f"[ RACHUNEK: {account} ]\n"
+        formatted += "  Środki:\n"
+        for fund, value in data.get('funds', {}).items():
+            formatted += f"    - {fund}: {value}\n"
+        formatted += "\n  Pozycje:\n"
+        positions = data.get('positions', [])
+        if positions:
+            for pos in positions:
+                formatted += f"    - Symbol: {pos['symbol']}, Ilość: {pos['quantity']}, ISIN: {pos['isin']}\n"
+        else:
+            formatted += "    - Brak otwartych pozycji.\n"
+        formatted += "-"*40 + "\n"
+        return formatted
 
 
 # -----------------------------------------------------------------------------
@@ -221,25 +258,6 @@ class BossaAPIClient:
             if sync_socket:
                 sync_socket.close()
 
-    def _send_and_receive_sync_orig(self, message):
-        """Wysyła i odbiera wiadomość na sockecie synchronicznym w sposób bezpieczny wątkowo."""
-        with self.sync_lock:
-            try:
-                if not self.sync_socket:
-                    self.sync_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    self.sync_socket.connect(('127.0.0.1', self.sync_port))
-                
-                self._send_message(self.sync_socket, message)
-                response = self._receive_message(self.sync_socket)
-                return response
-            except Exception as e:
-                self._log(f"BŁĄD komunikacji synchronicznej: {e}")
-                # Resetowanie socketu w razie błędu
-                if self.sync_socket:
-                    self.sync_socket.close()
-                self.sync_socket = None
-                return None
-
     def add_to_filter(self, isin):
         """Wysyła żądanie dodania instrumentu do filtra."""
         self.request_id += 1
@@ -254,7 +272,16 @@ class BossaAPIClient:
 </MktDataReq></FIXML>"""
         
         response = self._send_and_receive_sync(fixml_request)
-        if response and '<MktDataFull>' in response: # Odpowiedź synchroniczna to MarketDataSnapshotFullRefresh [cite: 217]
+        
+        print("\n--- DEBUG ---\n")
+        print(f"Otrzymano odpowiedź: {type(response)}")
+        print(f"Surowa odpowiedz z serwera: {response!r}")
+        if response is not None:
+            print("Odpowiedź serwera:", {len(response)})
+        print("\n--- DEBUG END ---\n")
+
+
+        if response and '<MktDataFull' in response: # Odpowiedź synchroniczna to MarketDataSnapshotFullRefresh [cite: 217]
             self._log(f"Pomyślnie dodano {isin} do filtra.")
         else:
             self._log(f"Błąd podczas dodawania do filtra. Odpowiedź: {response}")
@@ -265,7 +292,7 @@ class BossaAPIClient:
         # Atrybut SubReqTyp="2" do czyszczenia filtra [cite: 207]
         fixml_request = f'<FIXML v="5.0" r="20080317" s="20080314"><MktDataReq ReqID="{self.request_id}" SubReqTyp="2"></MktDataReq></FIXML>'
         response = self._send_and_receive_sync(fixml_request)
-        if response and '<MktDataFull>' in response:
+        if response and '<MktDataFull' in response:
             self._log("Pomyślnie wyczyszczono filtr.")
         else:
             self._log(f"Błąd podczas czyszczenia filtra. Odpowiedź: {response}")
@@ -310,7 +337,7 @@ class BossaAPIClient:
                 self.gui_queue.put(("LOGIN_SUCCESS", None))
                 self._async_listener()
             elif user_rsp.get('UserStat') == '6':
-                self.gui_queue.put(("LOGIN_SUCCESS",f"User already logged in."))
+                self.gui_queue.put(("LOGIN_SUCCESS",f"Status: {status}"))
                 self.is_logged_in = True
                 self._async_listener()
             else:
