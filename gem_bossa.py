@@ -7,6 +7,8 @@ import struct
 import winreg
 import xml.etree.ElementTree as ET
 import time
+import re
+import datetime
 
 class BossaApp:
     """Główna klasa aplikacji GUI, która zarządza interfejsem i klientem API."""
@@ -25,83 +27,127 @@ class BossaApp:
         # --- Główny kontener ---
         main_frame = tk.Frame(self.root)
         main_frame.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # --- Ramka logowania ---
+        main_frame.rowconfigure(1, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+
+        # --- Logowanie (na górze, wspólne dla obu zakładek) ---
         login_frame = tk.Frame(main_frame)
-        login_frame.pack(fill='x', pady=(0, 10))
-        # ... (reszta kontrolek logowania bez zmian)
+        login_frame.grid(row=0, column=0, sticky="ew")
+        login_frame.columnconfigure(0, weight=1)
+        login_frame.columnconfigure(1, weight=1)
+        login_frame.columnconfigure(2, weight=1)
+        login_frame.columnconfigure(3, weight=1)
+        login_frame.columnconfigure(4, weight=1)
+        login_frame.columnconfigure(5, weight=1)
 
-        # --- Ramka zarządzania filtrem ---
-        filter_frame = tk.Frame(main_frame)
-        filter_frame.pack(fill='x', pady=(0, 10))
-        
-        tk.Label(filter_frame, text="ISIN:").pack(side='left', padx=(0, 5))
+        tk.Label(login_frame, text="Użytkownik:").grid(row=0, column=0, sticky="w", padx=(0, 5))
+        self.username_entry = tk.Entry(login_frame, width=20)
+        self.username_entry.grid(row=0, column=1, sticky="ew", padx=5)
+        tk.Label(login_frame, text="Hasło:").grid(row=0, column=2, sticky="w", padx=5)
+        self.password_entry = tk.Entry(login_frame, show="*", width=20)
+        self.password_entry.grid(row=0, column=3, sticky="ew", padx=5)
+        self.username_entry.insert(0, "BOS")
+        self.password_entry.insert(0, "BOS")
+        self.login_button = tk.Button(login_frame, text="Połącz i zaloguj", command=self.start_login_thread)
+        self.login_button.grid(row=0, column=4, sticky="ew", padx=10)
+        self.disconnect_button = tk.Button(login_frame, text="Rozłącz", command=self.disconnect, state='disabled')
+        self.disconnect_button.grid(row=0, column=5, sticky="ew", padx=10)
+
+        # --- Notebook (zakładki) ---
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.grid(row=1, column=0, sticky="nsew")
+        main_frame.rowconfigure(1, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+
+        # --- Zakładka 1: Logi i komunikaty ---
+        self.tab_logs = tk.Frame(self.notebook)
+        self.notebook.add(self.tab_logs, text="Logi i komunikaty")
+        self.tab_logs.rowconfigure(2, weight=1)
+        self.tab_logs.columnconfigure(0, weight=1)
+
+        # Ramka zarządzania filtrem
+        filter_frame = tk.Frame(self.tab_logs)
+        filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        filter_frame.columnconfigure(1, weight=1)
+        tk.Label(filter_frame, text="ISIN:").grid(row=0, column=0, sticky="w", padx=(0, 5))
         self.isin_entry = tk.Entry(filter_frame, width=25)
-        self.isin_entry.pack(side='left', padx=5)
+        self.isin_entry.grid(row=0, column=1, sticky="ew", padx=5)
         self.isin_entry.insert(0, "PL0GF0031252")
-
         self.add_filter_button = tk.Button(filter_frame, text="Dodaj do filtra", command=self.add_to_filter, state='disabled')
-        self.add_filter_button.pack(side='left', padx=5)
-
+        self.add_filter_button.grid(row=0, column=2, padx=5)
         self.clear_filter_button = tk.Button(filter_frame, text="Wyczyść filtr", command=self.clear_filter, state='disabled')
-        self.clear_filter_button.pack(side='left', padx=5)
+        self.clear_filter_button.grid(row=0, column=3, padx=5)
 
-        # --- Wybór rachunku ---
-        account_frame = tk.Frame(main_frame)
-        account_frame.pack(fill='x', pady=(0, 10))
-        tk.Label(account_frame, text="Wybierz rachunek:").pack(side='left', padx=(0, 5))
+        tk.Label(self.tab_logs, text="Log statusu:").grid(row=1, column=0, sticky="w")
+        self.status_log = scrolledtext.ScrolledText(self.tab_logs, height=8, state='disabled')
+        self.status_log.grid(row=2, column=0, sticky="nsew", pady=(0,5))
+        self.tab_logs.rowconfigure(2, weight=1)
+
+        # --- Zakładka 2: Konta/Portfel ---
+        self.tab_accounts = tk.Frame(self.notebook)
+        self.notebook.add(self.tab_accounts, text="Konta i portfel")
+        self.tab_accounts.rowconfigure(2, weight=1)
+        self.tab_accounts.columnconfigure(0, weight=1)
+
+        # Wybór rachunku
+        account_frame = tk.Frame(self.tab_accounts)
+        account_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        account_frame.columnconfigure(1, weight=1)
+        tk.Label(account_frame, text="Wybierz rachunek:").grid(row=0, column=0, sticky="w", padx=(0, 5))
         self.account_var = tk.StringVar()
         self.account_dropdown = ttk.Combobox(account_frame, textvariable=self.account_var, state="readonly")
-        self.account_dropdown.pack(side='left', padx=5)
+        self.account_dropdown.grid(row=0, column=1, sticky="ew", padx=5)
         self.account_dropdown.bind("<<ComboboxSelected>>", self.on_account_selected)
         self.account_dropdown['values'] = ["ALL"]
         self.account_var.set("ALL")
 
-        # --- Podział okna na logi i portfel ---
-        paned_window = tk.PanedWindow(main_frame, orient='vertical', sashrelief='raised')
-        paned_window.pack(fill='both', expand=True)
+        # Dane portfela
+        tk.Label(self.tab_accounts, text="Dane portfela:").grid(row=1, column=0, sticky="w")
+        self.portfolio_display = scrolledtext.ScrolledText(self.tab_accounts, height=20, state='disabled')
+        self.portfolio_display.grid(row=2, column=0, sticky="nsew")
+        self.tab_accounts.rowconfigure(2, weight=1)
+        self.tab_accounts.columnconfigure(0, weight=1)
 
-        # --- Górny panel: logi i komunikaty async ---
-        top_panel = tk.Frame(paned_window)
-        tk.Label(top_panel, text="Log statusu:").pack(anchor='w')
-        self.status_log = scrolledtext.ScrolledText(top_panel, height=8, state='disabled')
-        self.status_log.pack(fill='x', expand=True, pady=(0, 5))
-        
-        tk.Label(top_panel, text="Surowe komunikaty (kanał asynchroniczny):").pack(anchor='w')
-        self.async_messages = scrolledtext.ScrolledText(top_panel, height=12, state='disabled', bg='lightgrey')
-        self.async_messages.pack(fill='x', expand=True)
-        paned_window.add(top_panel)
-        
-        # --- Dolny panel: portfel ---
-        bottom_panel = tk.Frame(paned_window)
-        tk.Label(bottom_panel, text="Dane portfela:").pack(anchor='w')
-        self.portfolio_display = scrolledtext.ScrolledText(bottom_panel, height=10, state='disabled')
-        self.portfolio_display.pack(fill='both', expand=True)
-        paned_window.add(bottom_panel)
+        # --- Zakładka 3: Surowe komunikaty async ---
+        self.tab_async = tk.Frame(self.notebook)
+        self.notebook.add(self.tab_async, text="Surowe komunikaty async")
+        self.tab_async.rowconfigure(0, weight=1)
+        self.tab_async.columnconfigure(0, weight=1)
 
-        # Dodanie pozostałych kontrolek logowania
-        tk.Label(login_frame, text="Użytkownik:").pack(side='left', padx=(0, 5))
-        self.username_entry = tk.Entry(login_frame, width=20)
-        self.username_entry.pack(side='left', padx=5)
-        tk.Label(login_frame, text="Hasło:").pack(side='left', padx=5)
-        self.password_entry = tk.Entry(login_frame, show="*", width=20)
-        self.password_entry.pack(side='left', padx=5)
-        self.username_entry.insert(0, "BOS")
-        self.password_entry.insert(0, "BOS")
-        self.login_button = tk.Button(login_frame, text="Połącz i zaloguj", command=self.start_login_thread)
-        self.login_button.pack(side='left', padx=10)
-        self.disconnect_button = tk.Button(login_frame, text="Rozłącz", command=self.disconnect, state='disabled')
-        self.disconnect_button.pack(side='left', padx=10)
+        tk.Label(self.tab_async, text="Surowe komunikaty (kanał asynchroniczny):").grid(row=0, column=0, sticky="w")
+        self.async_messages = scrolledtext.ScrolledText(self.tab_async, height=12, state='disabled', bg='lightgrey')
+        self.async_messages.grid(row=1, column=0, sticky="nsew")
+        self.tab_async.rowconfigure(1, weight=11)
+
+        # --- Status bar at the bottom ---
+        self.status_frame = tk.Frame(self.root, relief="sunken", bd=1)
+        self.status_frame.pack(side="bottom", fill="x")
+        self.heartbeat_var = tk.StringVar(value="♡")
+        self.status_time_var = tk.StringVar()
+        self.status_label = tk.Label(self.status_frame, textvariable=self.heartbeat_var, width=2, fg="red", font=("Arial", 12, "bold"))
+        self.status_label.pack(side="left", padx=(5, 2))
+        self.status_time_label = tk.Label(self.status_frame, textvariable=self.status_time_var, font=("Arial", 10))
+        self.status_time_label.pack(side="left", padx=5)
+        self._update_status_time()
+
+    def _update_status_time(self):
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+        self.status_time_var.set(f"Czas: {now}")
+        self.root.after(1000, self._update_status_time)
 
     def log_message(self, widget, message):
-        """Dodaje wiadomość do wybranego okna tekstowego."""
+        # Usuń nagłówek i stopkę FIXML jeśli są obecne
+        if isinstance(message, str) and message.startswith("<FIXML"):
+            # Usuwa <FIXML ...> oraz końcowy </FIXML>
+            message = re.sub(r'^<FIXML[^>]*>', '', message, flags=re.DOTALL)
+            message = re.sub(r'</FIXML>$', '', message, flags=re.DOTALL)
+            message = message.strip()
         widget.config(state='normal')
         widget.insert(tk.END, f"{time.strftime('%H:%M:%S')} - {message}\n")
         widget.yview(tk.END)
         widget.config(state='disabled')
 
     def start_login_thread(self):
-        # ... (bez zmian)
         self.login_button.config(state='disabled')
         self.disconnect_button.config(state='disabled')
         username = self.username_entry.get()
@@ -125,6 +171,9 @@ class BossaApp:
                 self.clear_filter_button.config(state='normal')
             elif message_type == "ASYNC_MSG":
                 self.log_message(self.async_messages, data.strip())
+                # Heartbeat detection (assuming heartbeat contains <HrtBt or similar)
+                if "<Heartbeat" in data or "<HrtBt>" in data:
+                    self._flash_heartbeat()
             elif message_type == "PORTFOLIO":
                 self.log_message(self.status_log, "Otrzymano dane portfela.")
                 self.display_portfolio(data)
@@ -138,11 +187,15 @@ class BossaApp:
             elif message_type == "LOGIN_FAIL":
                 self.log_message(self.status_log, f"Logowanie nie powiodło się: {data}")
                 self.login_button.config(state='normal')
-
         except queue.Empty:
             pass
         finally:
             self.root.after(100, self.process_queue)
+
+    def _flash_heartbeat(self):
+        # Flash the heartbeat icon
+        self.heartbeat_var.set("❤")
+        self.status_label.after(300, lambda: self.heartbeat_var.set("♡"))
 
     def add_to_filter(self):
         isin = self.isin_entry.get()
@@ -160,24 +213,20 @@ class BossaApp:
             self.log_message(self.status_log, "Rozłączanie...")
             self.disconnect_button.config(state='disabled')
             self.client.disconnect()
-            
+
     def display_portfolio(self, portfolio_data):
-        # Ustaw dostępne rachunki w dropdown
         accounts = list(portfolio_data.keys())
         self.account_dropdown['values'] = ["ALL"] + accounts
-        # Jeśli wybrany rachunek nie istnieje, ustaw na ALL
         if self.account_var.get() not in self.account_dropdown['values']:
             self.account_var.set("ALL")
-        # Wyświetl dane dla wybranego rachunku
         self._show_selected_account_portfolio(portfolio_data)
 
     def on_account_selected(self, event=None):
-        # Wywoływane przy zmianie wyboru w dropdown
         if hasattr(self, 'portfolio_displayed_data'):
             self._show_selected_account_portfolio(self.portfolio_displayed_data)
 
     def _show_selected_account_portfolio(self, portfolio_data):
-        self.portfolio_displayed_data = portfolio_data  # zapamiętaj do obsługi zmiany dropdown
+        self.portfolio_displayed_data = portfolio_data
         self.portfolio_display.config(state='normal')
         self.portfolio_display.delete('1.0', tk.END)
         selected = self.account_var.get()
@@ -225,7 +274,7 @@ class BossaAPIClient:
         self.is_logged_in = False
         self.portfolio = {}
         self.stop_event = threading.Event()
-        self.request_id = 100
+        self.request_id = 200
         self.sync_lock = threading.Lock() # Zabezpieczenie dostępu do socketu synchronicznego
 
     def _log(self, message):
