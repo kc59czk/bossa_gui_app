@@ -175,7 +175,6 @@ class BossaApp:
                     self._flash_heartbeat()
                 else:
                     self.log_message(self.async_messages, data.strip())
-
             elif message_type == "PORTFOLIO":
                 self.log_message(self.status_log, "Otrzymano dane portfela.")
                 self.display_portfolio(data)
