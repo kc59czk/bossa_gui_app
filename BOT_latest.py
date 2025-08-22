@@ -499,8 +499,13 @@ class BossaAPIClient:
             if status == '2':
                 last_px_str = exec_rpt.get('LastPx')
                 if not last_px_str: return
+
+                client_id = exec_rpt.get('ID')
+                dm_id = exec_rpt.get('OrdID')
+
                 if self.manager_state == BotState.WAITING_FOR_ENTRY_FILL and client_id == self.entry_order_id:
                     self.position_entry_price = float(last_px_str)
+                    self.entry_order_id = dm_id
                     if self.position_type == "LONG":
                         self.manager_state = BotState.IN_LONG_POSITION
                         stop_price = self.position_entry_price - self.manager_params['trailing_stop']
@@ -523,6 +528,15 @@ class BossaAPIClient:
                     self.manager_stop_event.set()
                     self.manager_state = BotState.IDLE
                     self.gui_queue.put(("BOT_STATE_UPDATE", {'entry_price': None}))
+                elif self.manager_state in [BotState.IN_LONG_POSITION, BotState.IN_SHORT_POSITION] and client_id == self.stop_order_id:
+                    self._bot_log(f"Stop-loss order acknowledged by the server. ID: {dm_id}")
+                    self.stop_order_id = dm_id
+            elif status in ['4', '8']:
+                client_id = exec_rpt.get('ID')
+                dm_id = exec_rpt.get('OrdID')
+                if self.manager_state == BotState.WAITING_FOR_ENTRY_FILL and client_id == self.stop_order_id:
+                    self._bot_log(f"Stop-loss order updated. Status: {status}, Server ID: {dm_id}")
+                    self.stop_order_id = dm_id
         except Exception as e:
             self._log(f"Błąd podczas parsowania ExecutionReport: {e}")
 
@@ -635,8 +649,10 @@ class BossaAPIClient:
         self.request_id += 1
         client_order_id = self.request_id
         if is_managed:
-            if self.manager_state == BotState.WAITING_FOR_ENTRY_FILL:
+            if self.manager_state == BotState.WAITING_FOR_ENTRY_FILL and not self.entry_order_id:
                 self.entry_order_id = str(client_order_id)
+            elif self.manager_state in [BotState.IN_LONG_POSITION, BotState.IN_SHORT_POSITION] and not self.stop_order_id:
+                self.stop_order_id = str(client_order_id)
             else:
                 self.stop_order_id = str(client_order_id)
         side = '1' if direction == "Kupno" else '2'
