@@ -104,7 +104,7 @@ class BossaApp:
         tk.Label(bot_params_frame, text="Cel dzienny (pkt):").pack(side='left')
         self.daily_goal_entry = tk.Entry(bot_params_frame, width=5)
         self.daily_goal_entry.pack(side='left', padx=(0,10))
-        self.daily_goal_entry.insert(0, "20")
+        self.daily_goal_entry.insert(0, "40")
 
         bot_action_frame = tk.Frame(self.tab_bot, pady=10)
         bot_action_frame.pack(fill='x')
@@ -114,6 +114,10 @@ class BossaApp:
         self.start_short_button.pack(side='left', expand=True, fill='x', padx=5)
         self.close_pos_button = tk.Button(bot_action_frame, text="ZAMKNIJ POZYCJĘ (PANIC)", command=self.close_trade_manually, state='disabled', bg='orange')
         self.close_pos_button.pack(side='left', expand=True, fill='x', padx=5)
+        
+        # NEW: Button to start bot with existing position
+        self.start_bot_existing_pos_button = tk.Button(bot_action_frame, text="START BOT Z ISTNIEJĄCĄ POZYCJĄ", command=self.start_bot_with_existing_position, state='disabled', bg='lightblue')
+        self.start_bot_existing_pos_button.pack(side='left', expand=True, fill='x', padx=5)
         
         tk.Label(self.tab_bot, text="Log Menedżera:").pack(anchor='w', pady=(10,0))
         self.bot_log = scrolledtext.ScrolledText(self.tab_bot, height=10, state='disabled')
@@ -177,6 +181,23 @@ class BossaApp:
         self.async_messages.pack(fill='both', expand=True)
         paned_window.add(top_panel)
 
+        # --- Status bar at the bottom ---
+        self.status_frame = tk.Frame(self.root, relief="sunken", bd=1)
+        self.status_frame.pack(side="bottom", fill="x")
+        self.heartbeat_var = tk.StringVar(value="♡")
+        self.status_time_var = tk.StringVar()
+        self.status_label = tk.Label(self.status_frame, textvariable=self.heartbeat_var, width=2, fg="red", font=("Arial", 12, "bold"))
+        self.status_label.pack(side="left", padx=(5, 2))
+        self.status_time_label = tk.Label(self.status_frame, textvariable=self.status_time_var, font=("Arial", 10))
+        self.status_time_label.pack(side="left", padx=5)
+        self._update_status_time()
+
+    def _update_status_time(self):
+        now = datetime.now().strftime("%H:%M:%S")
+        self.status_time_var.set(f"Czas: {now}")
+        self.root.after(1000, self._update_status_time)
+
+
     # --- NOWA METODA ---
     def on_treeview_select(self, event):
         """Aktywuje/deaktywuje przycisk anulowania w zależności od statusu zlecenia."""
@@ -218,7 +239,13 @@ class BossaApp:
         if self.client:
             self.log_message(self.status_log, f"Wysyłanie prośby o anulowanie zlecenia {order_details['id_dm']}...")
             threading.Thread(target=self.client.cancel_order, args=(order_details,), daemon=True).start()
+    def _flash_heartbeat(self):
+        # Flash the heartbeat icon
+        self.heartbeat_var.set("❤")
+        self.status_label.after(300, lambda: self.heartbeat_var.set("♡"))
 
+  #  def _update_latency(self,txt_value):
+        
     # Pozostałe metody bez zmian
     def process_queue(self):
         try:
@@ -229,6 +256,13 @@ class BossaApp:
                 if data.get('portfolio_data') and not self.account_entry.get():
                     first_account = next(iter(data['portfolio_data']))
                     self.account_entry.insert(0, first_account)
+                
+                # NEW: Check for existing position and enable button
+                if data.get('existing_position_found'):
+                    self.start_bot_existing_pos_button.config(state='normal')
+                    self.log_message(self.bot_log, f"Znaleziono istniejącą pozycję: {data['existing_position_details']['quantity']} szt. {data['existing_position_details']['symbol']} ({data['existing_position_details']['position_type']}). Możesz uruchomić bota z tą pozycją.")
+                else:
+                    self.start_bot_existing_pos_button.config(state='disabled')
             elif message_type == "MARKET_DATA_UPDATE":
                 if data.get('isin') == self.TARGET_ISIN:
                     self.bid_label.config(text=f"{data.get('bid', '---'):.2f}")
@@ -250,6 +284,7 @@ class BossaApp:
                     self.be_label.config(text="---")
                     self.start_long_button.config(state='normal')
                     self.start_short_button.config(state='normal')
+                    self.start_bot_existing_pos_button.config(state='disabled') # Disable if bot is idle/stopped
             elif message_type == "BOT_LOG":
                 self.log_message(self.bot_log, data)
             elif message_type == "EXEC_REPORT":
@@ -267,7 +302,18 @@ class BossaApp:
             elif message_type == "ASYNC_MSG":
             # Heartbeat detection (assuming heartbeat contains <HrtBt or similar)
                 if "<Heartbeat" in data:
-                    pass  # We could add heartbeat visualization here
+                    self._flash_heartbeat()
+                elif "<ApplMsgRpt" in data:
+                    try:
+                        root = ET.fromstring(data)  # parse string into XML
+                        appl_msg = root.find("ApplMsgRpt")  # find <ApplMsgRpt> element
+                        txt_value = appl_msg.get("Txt") if appl_msg is not None else None
+                        if txt_value:
+                            self.log_message(self.async_messages, f"Otrzymano ApplMsgRpt: {txt_value.strip()}")
+                        else:
+                            self.log_message(self.async_messages, "Otrzymano ApplMsgRpt (brak Txt)")
+                    except Exception as e:
+                        self.log_message(self.async_messages, f"Błąd parsowania ApplMsgRpt: {e}")
                 else:
                     self.log_message(self.async_messages, data.strip())
             elif message_type == "DISCONNECTED":
@@ -280,6 +326,7 @@ class BossaApp:
                 self.start_long_button.config(state='disabled')
                 self.start_short_button.config(state='disabled')
                 self.close_pos_button.config(state='disabled')
+                self.start_bot_existing_pos_button.config(state='disabled') # Disable on disconnect
                 self.client = None
                 self.orders = {}
                 for i in self.order_tree.get_children(): self.order_tree.delete(i)
@@ -305,13 +352,35 @@ class BossaApp:
             return
         self.start_long_button.config(state='disabled')
         self.start_short_button.config(state='disabled')
+        self.start_bot_existing_pos_button.config(state='disabled') # Disable when a new trade is started
         self.log_message(self.bot_log, f"Inicjowanie pozycji {direction}...")
         threading.Thread(target=self.client.start_trade_manager, args=(params, direction), daemon=True).start()
+
+    # NEW: Method to start bot with existing position
+    def start_bot_with_existing_position(self):
+        if not self.client:
+            self.log_message(self.bot_log, "Błąd: Klient nie jest połączony.")
+            return
+        try:
+            params = { 'account': self.account_entry.get(), 'trailing_stop': int(self.stoploss_entry.get()), 'daily_goal': int(self.daily_goal_entry.get()), 'commission': 1 }
+            if not params['account']:
+                self.log_message(self.bot_log, "Błąd: Numer rachunku jest wymagany.")
+                return
+        except ValueError:
+            self.log_message(self.bot_log, "Błąd: Parametry menedżera muszą być liczbami.")
+            return
+        
+        self.start_long_button.config(state='disabled')
+        self.start_short_button.config(state='disabled')
+        self.start_bot_existing_pos_button.config(state='disabled')
+        self.log_message(self.bot_log, "Uruchamiam bota z istniejącą pozycją...")
+        threading.Thread(target=self.client.start_trade_manager_with_existing_position, args=(params,), daemon=True).start()
+
 
     def close_trade_manually(self):
         if self.client:
             self.log_message(self.bot_log, "Ręczne zamykanie pozycji...")
-            self.client.close_position_manually()
+            self.client.close_trade_manually()
 
     def update_order_monitor(self, data):
         order_id = data.get('id_dm')
@@ -436,6 +505,7 @@ class BossaAPIClient:
         self.active_stop_price = 0
         self.position_type = None
         self.daily_profit = 0
+        self.existing_position_details = None # NEW: To store details of an existing position
 
     # --- ZAKTUALIZOWANA METODA ---
     def cancel_order(self, order_details):
@@ -463,6 +533,7 @@ class BossaAPIClient:
         root = ET.fromstring(xml_data)
         open_position_qty = 0
         parsed_portfolio = {}
+        self.existing_position_details = None # Reset before parsing
 
         for statement in root.findall('Statement'):
             account_id = statement.get('Acct')
@@ -471,16 +542,27 @@ class BossaAPIClient:
                 parsed_portfolio[account_id]['funds'][fund.get('name')] = fund.get('value')
             for position in statement.findall('.//Position'):
                 instrument = position.find('Instrmt')
-                pos_data = { 'symbol': instrument.get('Sym'), 'isin': instrument.get('ID'), 'quantity': position.get('Acc110'), 'blocked_quantity': position.get('Acc120') }
+                pos_data = { 'symbol': instrument.get('Sym'), 'isin': instrument.get('ID'), 'quantity': int(position.get('Acc110')), 'blocked_quantity': position.get('Acc120') }
                 parsed_portfolio[account_id]['positions'].append(pos_data)
                 
                 if pos_data['isin'] == self.TARGET_ISIN:
                     open_position_qty += int(pos_data['quantity'])
+                    # NEW: Store existing position details if found in the target account
+                    if account_id == "00-22-172137" and pos_data['quantity'] != 0: # Assuming "00-22-172137" is the target account
+                        self.existing_position_details = {
+                            'account': account_id,
+                            'symbol': pos_data['symbol'],
+                            'isin': pos_data['isin'],
+                            'quantity': pos_data['quantity'],
+                            'position_type': "LONG" if pos_data['quantity'] > 0 else "SHORT" # Determine position type
+                        }
 
         self.portfolio = parsed_portfolio
         self.gui_queue.put(("PORTFOLIO_UPDATE", {
             'portfolio_data': self.portfolio,
-            'open_position_qty': open_position_qty
+            'open_position_qty': open_position_qty,
+            'existing_position_found': self.existing_position_details is not None, # NEW: Indicate if an existing position was found
+            'existing_position_details': self.existing_position_details # NEW: Pass details to GUI
         }))
     
     # ... (pozostałe metody BossaAPIClient bez zmian)
@@ -539,6 +621,10 @@ class BossaAPIClient:
                 if self.manager_state == BotState.WAITING_FOR_ENTRY_FILL and client_id == self.stop_order_id:
                     self._bot_log(f"Stop-loss order updated. Status: {status}, Server ID: {dm_id}")
                     self.stop_order_id = dm_id
+                # NEW: If a stop order is canceled/rejected while in an active position, clear its ID
+                if self.manager_state in [BotState.IN_LONG_POSITION, BotState.IN_SHORT_POSITION] and dm_id == self.stop_order_id:
+                    self._bot_log(f"Active stop order (ID: {self.stop_order_id}) was canceled/rejected. Clearing stop_order_id.")
+                    self.stop_order_id = None # Clear the stop_order_id to allow a new one to be placed
         except Exception as e:
             self._log(f"Błąd podczas parsowania ExecutionReport: {e}")
 
@@ -598,55 +684,104 @@ class BossaAPIClient:
         self.manager_thread = threading.Thread(target=self._trailing_stop_loop, daemon=True)
         self.manager_thread.start()
 
-    def close_position_manually(self):
+    # NEW: Method to start bot with an existing position
+    def start_trade_manager_with_existing_position(self, params):
+        if not self.existing_position_details:
+            self._bot_log("Błąd: Brak istniejącej pozycji do zarządzania.")
+            return
+        if self.manager_state not in [BotState.STOPPED, BotState.IDLE]:
+            self._bot_log("Błąd: Menedżer jest już aktywny w innej pozycji.")
+            return
+
+        self.manager_params = params
+        self.manager_stop_event.clear()
+
+        # Initialize bot state based on existing position
+        self.position_type = self.existing_position_details['position_type']
+        self.position_entry_price = self.market_data.get(self.TARGET_ISIN, {}).get('last_price', 0) # Use last price as a proxy for entry, or ideally fetch actual entry price if available
+        
+        if self.position_type == "LONG":
+            self.manager_state = BotState.IN_LONG_POSITION
+            self.active_stop_price = self.position_entry_price - self.manager_params['trailing_stop']
+            self._bot_log(f"Zarządzam istniejącą pozycją LONG. Cena wejścia (szacowana): {self.position_entry_price:.2f}. Ustawiam początkowy Stop-Loss na {self.active_stop_price:.2f}")
+            # Place initial stop-loss for the existing position
+            self.send_limit_order(self.manager_params['account'], "Sprzedaż", self.existing_position_details['quantity'], self.active_stop_price, is_managed=True)
+        elif self.position_type == "SHORT":
+            self.manager_state = BotState.IN_SHORT_POSITION
+            self.active_stop_price = self.position_entry_price + self.manager_params['trailing_stop']
+            self._bot_log(f"Zarządzam istniejącą pozycją SHORT. Cena wejścia (szacowana): {self.position_entry_price:.2f}. Ustawiam początkowy Stop-Loss na {self.active_stop_price:.2f}")
+            # Place initial stop-loss for the existing position
+            self.send_limit_order(self.manager_params['account'], "Kupno", self.existing_position_details['quantity'], self.active_stop_price, is_managed=True)
+        
+        self.gui_queue.put(("BOT_STATE_UPDATE", {'entry_price': self.position_entry_price, 'commission': self.manager_params['commission'], 'position_type': self.position_type}))
+        
+        self.manager_thread = threading.Thread(target=self._trailing_stop_loop, daemon=True)
+        self.manager_thread.start()
+
+    def close_trade_manually(self):
         if self.manager_state not in [BotState.IN_LONG_POSITION, BotState.IN_SHORT_POSITION]:
             self._bot_log("Brak otwartej pozycji do zamknięcia.")
             return
         if self.stop_order_id:
             self._bot_log(f"Anulowanie aktywnego stop-lossa (ID: {self.stop_order_id})...")
-            self.cancel_order({'id_dm': self.stop_order_id, 'k_s_text': 'Sprzedaż' if self.position_type == 'LONG' else 'Kupno', 'ilosc': 1, 'rachunek': self.manager_params['account']})
+            # Use the quantity from existing_position_details if available, otherwise default to 1
+            qty_to_cancel = self.existing_position_details['quantity'] if self.existing_position_details else 1
+            self.cancel_order({'id_dm': self.stop_order_id, 'k_s_text': 'Sprzedaż' if self.position_type == 'LONG' else 'Kupno', 'ilosc': qty_to_cancel, 'rachunek': self.manager_params['account']})
             self.stop_order_id = None
         market_info = self.market_data.get(self.TARGET_ISIN)
         if self.position_type == "LONG":
             exit_price = market_info.get('bid')
             self._bot_log(f"Ręczne zamykanie LONG po cenie rynkowej (BID): {exit_price}")
-            self.send_limit_order(self.manager_params['account'], "Sprzedaż", 1, exit_price, is_managed=True)
+            qty_to_close = self.existing_position_details['quantity'] if self.existing_position_details else 1
+            self.send_limit_order(self.manager_params['account'], "Sprzedaż", qty_to_close, exit_price, is_managed=True)
         elif self.position_type == "SHORT":
             exit_price = market_info.get('ask')
             self._bot_log(f"Ręczne zamykanie SHORT po cenie rynkowej (ASK): {exit_price}")
-            self.send_limit_order(self.manager_params['account'], "Kupno", 1, exit_price, is_managed=True)
+            qty_to_close = self.existing_position_details['quantity'] if self.existing_position_details else 1
+            self.send_limit_order(self.manager_params['account'], "Kupno", qty_to_close, exit_price, is_managed=True)
         self.manager_stop_event.set()
 
     def _trailing_stop_loop(self):
         self._bot_log("Pętla Trailing Stop rozpoczęta.")
         while not self.manager_stop_event.is_set():
-            self._bot_log("DEBUG: Pętla Trailing Stop aktywna...")
+            self._bot_log("DBG: Pętla Trailing Stop aktywna... sprawdzanie ceny...")
             time.sleep(1.5)
             if self.manager_state not in [BotState.IN_LONG_POSITION, BotState.IN_SHORT_POSITION]:
-                self._bot_log("DEBUG:   Nie w pozycji. Kończę pętlę Trailing Stop.")
+                self._bot_log("DBG: Pętla Trailing Stop zakończona - brak aktywnej pozycji.")
                 continue
+            self._bot_log("DBG: Pętla Trailing Stop - pobieranie najnowszej ceny...")
             last_price = self.market_data.get(self.TARGET_ISIN, {}).get('last_price')
             if not last_price: continue
             new_stop_price = self.active_stop_price
             should_move_stop = False
-            if self.manager_state == BotState.IN_LONG_POSITION:
+            
+            # Determine quantity for stop-loss order
+            qty_for_stop = self.existing_position_details['quantity'] if self.existing_position_details else 1
+
+            if self.position_type == BotState.IN_LONG_POSITION: # Changed from "LONG" to BotState.IN_LONG_POSITION
                 potential_stop = last_price - self.manager_params['trailing_stop']
                 if potential_stop > self.active_stop_price:
                     new_stop_price = potential_stop
                     should_move_stop = True
-            elif self.manager_state == BotState.IN_SHORT_POSITION:
+            elif self.position_type == BotState.IN_SHORT_POSITION: # Changed from "SHORT" to BotState.IN_SHORT_POSITION
                 potential_stop = last_price + self.manager_params['trailing_stop']
                 if potential_stop < self.active_stop_price:
                     new_stop_price = potential_stop
                     should_move_stop = True
+            
             if should_move_stop:
                 self._bot_log(f"Cena przesunęła się. Przesuwam stop-loss z {self.active_stop_price:.2f} na {new_stop_price:.2f}")
-                self.cancel_order({'id_dm': self.stop_order_id, 'k_s_text': 'Sprzedaż' if self.position_type == 'LONG' else 'Kupno', 'ilosc': 1, 'rachunek': self.manager_params['account']})
+                
+                # Only attempt to cancel if there's an active stop order
+                if self.stop_order_id:
+                    self.cancel_order({'id_dm': self.stop_order_id, 'k_s_text': 'Sprzedaż' if self.position_type == "LONG" else 'Kupno', 'ilosc': qty_for_stop, 'rachunek': self.manager_params['account']})
+                    self.stop_order_id = None # Clear the old stop order ID immediately after cancellation request
+
                 self.active_stop_price = new_stop_price
                 if self.position_type == "LONG":
-                    self.send_limit_order(self.manager_params['account'], "Sprzedaż", 1, new_stop_price, is_managed=True)
+                    self.send_limit_order(self.manager_params['account'], "Sprzedaż", qty_for_stop, new_stop_price, is_managed=True)
                 else:
-                    self.send_limit_order(self.manager_params['account'], "Kupno", 1, new_stop_price, is_managed=True)
+                    self.send_limit_order(self.manager_params['account'], "Kupno", qty_for_stop, new_stop_price, is_managed=True)
         self._bot_log("Pętla Trailing Stop zakończona.")
 
     def send_limit_order(self, account, direction, quantity, price, is_managed=False):
@@ -655,10 +790,9 @@ class BossaAPIClient:
         if is_managed:
             if self.manager_state == BotState.WAITING_FOR_ENTRY_FILL and not self.entry_order_id:
                 self.entry_order_id = str(client_order_id)
-            elif self.manager_state in [BotState.IN_LONG_POSITION, BotState.IN_SHORT_POSITION] and not self.stop_order_id:
+            # Always update stop_order_id if it's a managed stop-loss order
+            elif self.manager_state in [BotState.IN_LONG_POSITION, BotState.IN_SHORT_POSITION]:
                 self.stop_order_id = str(client_order_id)
-  #          else:
-  #              self.stop_order_id = str(client_order_id)
         side = '1' if direction == "Kupno" else '2'
         trade_date = datetime.now().strftime('%Y%m%d')
         transact_time = datetime.now().strftime('%Y%m%d-%H:%M:%S')
