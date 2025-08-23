@@ -181,16 +181,44 @@ class BossaApp:
         self.async_messages.pack(fill='both', expand=True)
         paned_window.add(top_panel)
 
-        # --- Status bar at the bottom ---
+# --- Status bar at the bottom ---
         self.status_frame = tk.Frame(self.root, relief="sunken", bd=1)
         self.status_frame.pack(side="bottom", fill="x")
+
+# Container for right-aligned widgets
+        self.right_status_frame = tk.Frame(self.status_frame)
+        self.right_status_frame.pack(side="right", padx=5, pady=2)
+
+# Heartbeat icon (first, on the far right)
         self.heartbeat_var = tk.StringVar(value="♡")
+        self.status_label = tk.Label(
+            self.right_status_frame, 
+            textvariable=self.heartbeat_var, 
+            width=2, 
+            fg="red", 
+            font=("Arial", 12, "bold")
+        )
+        self.status_label.pack(side="right", padx=(2, 5))
+
+# Time (to the left of heartbeat)
         self.status_time_var = tk.StringVar()
-        self.status_label = tk.Label(self.status_frame, textvariable=self.heartbeat_var, width=2, fg="red", font=("Arial", 12, "bold"))
-        self.status_label.pack(side="left", padx=(5, 2))
-        self.status_time_label = tk.Label(self.status_frame, textvariable=self.status_time_var, font=("Arial", 10))
-        self.status_time_label.pack(side="left", padx=5)
+        self.status_time_label = tk.Label(
+            self.right_status_frame, 
+            textvariable=self.status_time_var, 
+            font=("Arial", 10)
+        )
+        self.status_time_label.pack(side="right", padx=5)
         self._update_status_time()
+
+# Latency (furthest left in this group)
+        self.status_latency_var = tk.StringVar()
+        self.status_latency_label = tk.Label(
+            self.right_status_frame, 
+            textvariable=self.status_latency_var, 
+            font=("Arial", 10)
+        )
+        self.status_latency_label.pack(side="right", padx=5)
+        self.status_latency_var.set("Latency: --- ")
 
     def _update_status_time(self):
         now = datetime.now().strftime("%H:%M:%S")
@@ -309,7 +337,8 @@ class BossaApp:
                         appl_msg = root.find("ApplMsgRpt")  # find <ApplMsgRpt> element
                         txt_value = appl_msg.get("Txt") if appl_msg is not None else None
                         if txt_value:
-                            self.log_message(self.async_messages, f"Otrzymano ApplMsgRpt: {txt_value.strip()}")
+                            self.status_latency_var.set(f"Latency: {txt_value.strip()} ")
+#                            self.log_message(self.async_messages, f"Otrzymano ApplMsgRpt: {txt_value.strip()}")
                         else:
                             self.log_message(self.async_messages, "Otrzymano ApplMsgRpt (brak Txt)")
                     except Exception as e:
